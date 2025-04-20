@@ -195,7 +195,7 @@ def bezier(p, steps=100):
 if __name__ == "__main__":
     env = Hw5Env(render_mode="gui")
     states_arr = []
-    for i in range(10):
+    for i in range(100):
         env.reset()
         p_1 = np.array([0.5, 0.3, 1.04])
         p_2 = np.array([0.5, 0.15, np.random.uniform(1.04, 1.4)])
@@ -212,6 +212,8 @@ if __name__ == "__main__":
         states = np.stack(states)
         states_arr.append(states)
         print(f"Collected {i+1} trajectories.", end="\r")
+
+    np.save("states.npy", states_arr)
 
     fig, ax = plt.subplots(1, 2)
     for states in states_arr:
