@@ -1,191 +1,243 @@
 import numpy as np
 import matplotlib.pyplot as plt
-
 import torch
-import torch.nn as nn
+from homework4 import CNP
 
-# load states.npy
+# Load and preprocess data
 states = np.load('assets/states.npy', allow_pickle=True)
-
 dataset = []
-heights = []
 
-for episode in states:  # shape: (100, 5)
-    height = episode[0, 4]  # grab h from first timestep
-    heights.append(height)
-
+for episode in states:
     for t_idx, step in enumerate(episode):
-        ey, ez, oy, oz, h = step  # h will be same as episode height
+        t = t_idx / (len(episode) - 1) if len(episode) > 1 else 0.0  # Normalize time to [0,1]
+        ey, ez, oy, oz, h = step
         dataset.append({
-            "t": t_idx / 100,  # normalize time to [0, 1]
-            "ey": ey,
-            "ez": ez,
-            "oy": oy,
-            "oz": oz,
-            "h": h
+            't': t,
+            'ey': ey,
+            'ez': ez,
+            'oy': oy,
+            'oz': oz,
+            'h': h
         })
 
-heights = np.array(heights)
+# Convert to tensors
+data_t = torch.tensor([d['t'] for d in dataset]).float().unsqueeze(1)
+data_h = torch.tensor([d['h'] for d in dataset]).float().unsqueeze(1)
+data_y = torch.tensor([[d['ey'], d['ez'], d['oy'], d['oz']] for d in dataset]).float()
 
-class CNMP(nn.Module):
+# Create CNMP model
+class CNMPWrapper(CNP):
     def __init__(self):
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(2, 64),  # (t, h)
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 4)  # output: (ey, ez, oy, oz)
-        )
+        super().__init__(in_shape=(2, 4),  # (t,h) input, (ey,ez,oy,oz) output
+                         hidden_size=128,
+                         num_hidden_layers=3,
+                         min_std=0.1)
 
-    def forward(self, t, h):
-        x = torch.cat([t, h], dim=1)  # shape: (batch, 2)
-        return self.model(x)  # shape: (batch, 4)
-    
+    def prepare_inputs(self, t, h, y=None):
+        # Combine t and h for query/observation x
+        x = torch.cat([t, h], dim=-1)
+        return x, y
 
-def train_model(model, dataset, epochs=500, batch_size=64):
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    loss_fn = nn.MSELoss()
+    def forward(self, observation_x, observation_y, target_x, observation_mask=None):
+        # Prepare observation input for the base CNP
+        observation = torch.cat([observation_x, observation_y], dim=-1)
+        return super().forward(observation, target_x, observation_mask)
 
-    data = [
-        (
-            torch.tensor([[d['t']]], dtype=torch.float32),
-            torch.tensor([[d['h']]], dtype=torch.float32),
-            torch.tensor([[d['ey'], d['ez'], d['oy'], d['oz']]], dtype=torch.float32)
-        )
-        for d in dataset
-    ]
+model = CNMPWrapper()
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
+# Training function with improved batching
+def train(model, data_t, data_h, data_y, epochs=1000, batch_size=64):
+    losses = []
+    n_data = len(data_t)
     for epoch in range(epochs):
-        np.random.shuffle(data)
-        total_loss = 0
+        permutation = torch.randperm(n_data)
+        for i in range(0, n_data, batch_size):
+            indices = permutation[i:i + batch_size]
+            batch_t = data_t[indices]
+            batch_h = data_h[indices]
+            batch_y = data_y[indices]
 
-        for i in range(0, len(data), batch_size):
-            batch = data[i:i + batch_size]
-            t_batch = torch.cat([b[0] for b in batch], dim=0)
-            h_batch = torch.cat([b[1] for b in batch], dim=0)
-            y_batch = torch.cat([b[2] for b in batch], dim=0)
+            # Randomly split into context and target
+            n_context = torch.randint(10, batch_size - 10, (1,)).item() if batch_size > 20 else 10
 
-            pred = model(t_batch, h_batch)
-            loss = loss_fn(pred, y_batch)
+            # Prepare inputs - x is (t,h), y is (ey,ez,oy,oz)
+            context_x = torch.cat([batch_t[:n_context], batch_h[:n_context]], dim=-1)
+            context_y = batch_y[:n_context]
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            target_x = torch.cat([batch_t[n_context:], batch_h[n_context:]], dim=-1)
+            target_y = batch_y[n_context:]
 
-            total_loss += loss.item()
+            # Forward pass
+            mean, std = model(context_x.unsqueeze(0),  # Add batch dimension
+                                context_y.unsqueeze(0),
+                                target_x.unsqueeze(0))
 
-        if epoch % 50 == 0:
-            print(f"Epoch {epoch}: Loss = {total_loss:.4f}")
+            # Compute loss
+            if target_y.numel() > 0:
+                dist = torch.distributions.Normal(mean, std)
+                loss = -dist.log_prob(target_y.unsqueeze(0)).mean()
 
-def evaluate_model(model, dataset, n_tests=100):
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                losses.append(loss.item())
+
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {np.mean(losses[-len(indices):]):.4f}")
+
+    plt.plot(losses)
+    plt.xlabel('Iteration')
+    plt.ylabel('Loss')
+    plt.title('Training Loss')
+    plt.savefig('assets/training_loss.png')
+    plt.show()
+    return losses
+
+# Improved evaluation function
+def evaluate(model, dataset, n_tests=100):
     ef_errors = []
     obj_errors = []
+    n_dataset = len(dataset)
 
     for _ in range(n_tests):
-        traj = np.random.choice(dataset, 1)[0]
-        height = traj["h"]
+        # Randomly select context and target sizes
+        n_context = np.random.randint(10, n_dataset // 2)
+        n_target = np.random.randint(10, n_dataset - n_context)
 
-        # Sample context and query sizes
-        context_size = np.random.randint(1, 10)
-        query_size = np.random.randint(1, 10)
+        # Randomly sample points
+        idx = np.random.choice(n_dataset, n_context + n_target, replace=False)
+        context_idx = idx[:n_context]
+        target_idx = idx[n_context:]
 
-        # Sample queries
-        query_points = np.random.choice(dataset, query_size)
+        # Prepare context inputs
+        context_t = torch.tensor([dataset[i]['t'] for i in context_idx]).float().unsqueeze(1)
+        context_h = torch.tensor([dataset[i]['h'] for i in context_idx]).float().unsqueeze(1)
+        context_y = torch.tensor([[dataset[i]['ey'], dataset[i]['ez'],
+                                    dataset[i]['oy'], dataset[i]['oz']]
+                                   for i in context_idx]).float()
 
-        for point in query_points:
-            t = torch.tensor([[point["t"]]], dtype=torch.float32)
-            h = torch.tensor([[point["h"]]], dtype=torch.float32)
-            y_true = np.array([point["ey"], point["ez"], point["oy"], point["oz"]])
+        # Prepare target inputs
+        target_t = torch.tensor([dataset[i]['t'] for i in target_idx]).float().unsqueeze(1)
+        target_h = torch.tensor([dataset[i]['h'] for i in target_idx]).float().unsqueeze(1)
+        target_y = torch.tensor([[dataset[i]['ey'], dataset[i]['ez'],
+                                    dataset[i]['oy'], dataset[i]['oz']]
+                                   for i in target_idx]).float()
 
-            with torch.no_grad():
-                pred = model(t, h).numpy().squeeze()
+        # Forward pass
+        with torch.no_grad():
+            context_x = torch.cat([context_t, context_h], dim=-1)
+            target_x = torch.cat([target_t, target_h], dim=-1)
 
-            ef_pred = pred[:2]
-            ef_true = y_true[:2]
-            obj_pred = pred[2:]
-            obj_true = y_true[2:]
+            mean, _ = model(context_x.unsqueeze(0),
+                                context_y.unsqueeze(0),
+                                target_x.unsqueeze(0))
 
-            ef_errors.append(np.mean((ef_pred - ef_true) ** 2))
-            obj_errors.append(np.mean((obj_pred - obj_true) ** 2))
+            # Calculate errors
+            ef_error = ((mean[0, :, :2] - target_y[:, :2]) ** 2).mean().item()
+            obj_error = ((mean[0, :, 2:] - target_y[:, 2:]) ** 2).mean().item()
+
+            ef_errors.append(ef_error)
+            obj_errors.append(obj_error)
 
     return np.mean(ef_errors), np.std(ef_errors), np.mean(obj_errors), np.std(obj_errors)
 
-
-def plot_random_trajectories(model, num_trajectories=5, num_points=100, h_range=(0.03, 0.1), seed=None):
-    """
-    Generate and plot multiple random trajectories for randomly sampled object heights.
-
-    Args:
-        model: Trained CNMP model.
-        num_trajectories: Number of different random h values (trajectories).
-        num_points: Number of time steps per trajectory.
-        h_range: Tuple (min, max) for sampling h.
-        seed: Optional random seed for reproducibility.
-    """
+# Improved trajectory plotting
+def plot_cnmp_trajectories(model, dataset, num_trajectories=5, num_points=100, seed=None):
     if seed is not None:
         np.random.seed(seed)
 
     model.eval()
-    t_values = np.linspace(0, 1, num_points).reshape(-1, 1)
-    t_tensor = torch.tensor(t_values, dtype=torch.float32)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    ax_ee = axes[0]
+    ax_obj = axes[1]
 
-    # Generate and cache all h values for the trajectories at the beginning
-    h_values = np.random.uniform(*h_range, size=num_trajectories)
-
-    plt.figure(figsize=(12, 5))
+    # Get unique heights from dataset
+    unique_heights = sorted(list({d['h'] for d in dataset}))
+    selected_heights = np.random.choice(unique_heights, min(num_trajectories, len(unique_heights)), replace=False)
 
     # End-effector plot
-    plt.subplot(1, 2, 1)
-    for h_val in h_values:
-        h_tensor = torch.full((num_points, 1), h_val, dtype=torch.float32)
-        with torch.no_grad():
-            pred = model(t_tensor, h_tensor).numpy()
-        ey, ez = pred[:, 0], pred[:, 1]
-        plt.plot(ey, ez, label=f"h={h_val:.2f}")
-    plt.xlabel("Y")
-    plt.ylabel("Z")
-    plt.title("End-Effector Trajectories")
-    plt.grid(True)
-    plt.legend()
+    ax_ee.set_xlabel("e_y")
+    ax_ee.set_ylabel("e_z")
+    ax_ee.set_title("Predicted End-Effector Trajectories")
+    ax_ee.grid(True)
 
     # Object plot
-    plt.subplot(1, 2, 2)
-    for h_val in h_values:
-        h_tensor = torch.full((num_points, 1), h_val, dtype=torch.float32)
-        with torch.no_grad():
-            pred = model(t_tensor, h_tensor).numpy()
-        oy, oz = pred[:, 2], pred[:, 3]
-        plt.plot(oy, oz, label=f"h={h_val:.2f}")
-    plt.xlabel("Y")
-    plt.ylabel("Z")
-    plt.title("Object Trajectories")
-    plt.grid(True)
-    plt.legend()
+    ax_obj.set_xlabel("o_y")
+    ax_obj.set_ylabel("o_z")
+    ax_obj.set_title("Predicted Object Trajectories")
+    ax_obj.grid(True)
 
-    plt.tight_layout()
-    plt.savefig('assets/cnmp_trajectories.png')
+    for h_val in selected_heights:
+        # Filter dataset for this height
+        h_data = [d for d in dataset if abs(d['h'] - h_val) < 1e-6]
+        if len(h_data) < 10:  # Skip if not enough data
+            continue
+
+        # Create time points
+        t_values = np.linspace(0, 1, num_points)
+
+        # Create context points (actual data points)
+        context_idx = np.random.choice(len(h_data), min(20, len(h_data)), replace=False)
+        context_t = torch.tensor([h_data[i]['t'] for i in context_idx]).float().unsqueeze(1)
+        context_h = torch.tensor([h_data[i]['h'] for i in context_idx]).float().unsqueeze(1)
+        context_y = torch.tensor([[h_data[i]['ey'], h_data[i]['ez'],
+                                    h_data[i]['oy'], h_data[i]['oz']]
+                                   for i in context_idx]).float()
+
+        # Create target points (evenly spaced in time)
+        target_t = torch.tensor(t_values).float().unsqueeze(1)
+        target_h = torch.full((num_points, 1), h_val, dtype=torch.float32)
+
+        # Forward pass
+        with torch.no_grad():
+            context_x = torch.cat([context_t, context_h], dim=-1)
+            target_x = torch.cat([target_t, target_h], dim=-1)
+
+            mean, _ = model(context_x.unsqueeze(0),
+                                context_y.unsqueeze(0),
+                                target_x.unsqueeze(0))
+
+            ey, ez = mean[0, :, 0].numpy(), mean[0, :, 1].numpy()
+            ax_ee.plot(ey, ez, alpha=0.5, label=f"h={h_val:.3f}")
+
+            oy, oz = mean[0, :, 2].numpy(), mean[0, :, 3].numpy()
+            ax_obj.plot(oy, oz, alpha=0.5, label=f"h={h_val:.3f}")
+
+    ax_ee.legend()
+    ax_obj.legend()
+    fig.tight_layout()
+    plt.savefig('assets/cnmp_predicted_trajectories.png')
     plt.show()
-    
+
+# Plot error bars
 def plot_errors(ef_mean, ef_std, obj_mean, obj_std):
     labels = ['End-Effector', 'Object']
     means = [ef_mean, obj_mean]
     stds = [ef_std, obj_std]
 
-    plt.bar(labels, means, yerr=stds, capsize=10)
-    plt.ylabel('MSE')
-    plt.title('Prediction Error (CNMP)')
+    plt.figure(figsize=(8, 5))
+    plt.bar(labels, means, yerr=stds, capsize=10, alpha=0.7)
+    plt.ylabel('Mean Squared Error')
+    plt.title('Prediction Errors')
+    plt.grid(True, axis='y')
     plt.savefig('assets/cnmp_errors.png')
     plt.show()
 
+# Main execution
+if __name__ == "__main__":
+    # Train the model
+    train_losses = train(model, data_t, data_h, data_y, epochs=50)
 
-model = CNMP()
-train_model(model, dataset)
-ef_mean, ef_std, obj_mean, obj_std = evaluate_model(model, dataset)
-plot_errors(ef_mean, ef_std, obj_mean, obj_std)
+    # Evaluate
+    ef_mean, ef_std, obj_mean, obj_std = evaluate(model, dataset)
+    print(f"End-effector MSE: {ef_mean:.4f} ± {ef_std:.4f}")
+    print(f"Object MSE: {obj_mean:.4f} ± {obj_std:.4f}")
 
-# Save the model
-torch.save(model.state_dict(), 'assets/cnmp_model.pth')
+    # Plot results
+    plot_errors(ef_mean, ef_std, obj_mean, obj_std)
+    plot_cnmp_trajectories(model, dataset, num_trajectories=5)
 
-# Generate a sample trajectory
-plot_random_trajectories(model, num_trajectories=5, num_points=100, seed=1)
+    # Save model
+    torch.save(model.state_dict(), 'assets/cnmp_model.pth')
