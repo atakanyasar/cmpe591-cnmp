@@ -223,4 +223,5 @@ if __name__ == "__main__":
         ax[1].plot(states[:, 2], states[:, 3], alpha=0.2, color="r")
         ax[1].set_xlabel("o_y")
         ax[1].set_ylabel("o_z")
+    plt.savefig("collected_trajectories.png")
     plt.show()

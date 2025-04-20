@@ -112,6 +112,61 @@ def evaluate_model(model, dataset, n_tests=100):
     return np.mean(ef_errors), np.std(ef_errors), np.mean(obj_errors), np.std(obj_errors)
 
 
+def plot_random_trajectories(model, num_trajectories=5, num_points=100, h_range=(0.03, 0.1), seed=None):
+    """
+    Generate and plot multiple random trajectories for randomly sampled object heights.
+
+    Args:
+        model: Trained CNMP model.
+        num_trajectories: Number of different random h values (trajectories).
+        num_points: Number of time steps per trajectory.
+        h_range: Tuple (min, max) for sampling h.
+        seed: Optional random seed for reproducibility.
+    """
+    if seed is not None:
+        np.random.seed(seed)
+
+    model.eval()
+    t_values = np.linspace(0, 1, num_points).reshape(-1, 1)
+    t_tensor = torch.tensor(t_values, dtype=torch.float32)
+
+    plt.figure(figsize=(12, 5))
+
+    # End-effector plot
+    plt.subplot(1, 2, 1)
+    for _ in range(num_trajectories):
+        h_val = np.random.uniform(*h_range)
+        h_tensor = torch.full((num_points, 1), h_val, dtype=torch.float32)
+        with torch.no_grad():
+            pred = model(t_tensor, h_tensor).numpy()
+        ey, ez = pred[:, 0], pred[:, 1]
+        plt.plot(ey, ez, label=f"h={h_val:.2f}")
+    plt.xlabel("Y")
+    plt.ylabel("Z")
+    plt.title("End-Effector Trajectories")
+    plt.grid(True)
+    plt.legend()
+
+    # Object plot
+    plt.subplot(1, 2, 2)
+    for _ in range(num_trajectories):
+        h_val = np.random.uniform(*h_range)
+        h_tensor = torch.full((num_points, 1), h_val, dtype=torch.float32)
+        with torch.no_grad():
+            pred = model(t_tensor, h_tensor).numpy()
+        oy, oz = pred[:, 2], pred[:, 3]
+        plt.plot(oy, oz, label=f"h={h_val:.2f}")
+    plt.xlabel("Y")
+    plt.ylabel("Z")
+    plt.title("Object Trajectories")
+    plt.grid(True)
+    plt.legend()
+
+    plt.tight_layout()
+    plt.savefig('cnmp_trajectories.png')
+    plt.show()
+
+
 def plot_errors(ef_mean, ef_std, obj_mean, obj_std):
     labels = ['End-Effector', 'Object']
     means = [ef_mean, obj_mean]
@@ -128,3 +183,9 @@ model = CNMP()
 train_model(model, dataset)
 ef_mean, ef_std, obj_mean, obj_std = evaluate_model(model, dataset)
 plot_errors(ef_mean, ef_std, obj_mean, obj_std)
+
+# Save the model
+torch.save(model.state_dict(), 'cnmp_model.pth')
+
+# Generate a sample trajectory
+plot_random_trajectories(model, num_trajectories=5, num_points=100, seed=1)
