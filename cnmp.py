@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 # load states.npy
-states = np.load('states.npy', allow_pickle=True)
+states = np.load('assets/states.npy', allow_pickle=True)
 
 dataset = []
 heights = []
@@ -130,12 +130,14 @@ def plot_random_trajectories(model, num_trajectories=5, num_points=100, h_range=
     t_values = np.linspace(0, 1, num_points).reshape(-1, 1)
     t_tensor = torch.tensor(t_values, dtype=torch.float32)
 
+    # Generate and cache all h values for the trajectories at the beginning
+    h_values = np.random.uniform(*h_range, size=num_trajectories)
+
     plt.figure(figsize=(12, 5))
 
     # End-effector plot
     plt.subplot(1, 2, 1)
-    for _ in range(num_trajectories):
-        h_val = np.random.uniform(*h_range)
+    for h_val in h_values:
         h_tensor = torch.full((num_points, 1), h_val, dtype=torch.float32)
         with torch.no_grad():
             pred = model(t_tensor, h_tensor).numpy()
@@ -149,8 +151,7 @@ def plot_random_trajectories(model, num_trajectories=5, num_points=100, h_range=
 
     # Object plot
     plt.subplot(1, 2, 2)
-    for _ in range(num_trajectories):
-        h_val = np.random.uniform(*h_range)
+    for h_val in h_values:
         h_tensor = torch.full((num_points, 1), h_val, dtype=torch.float32)
         with torch.no_grad():
             pred = model(t_tensor, h_tensor).numpy()
@@ -163,10 +164,9 @@ def plot_random_trajectories(model, num_trajectories=5, num_points=100, h_range=
     plt.legend()
 
     plt.tight_layout()
-    plt.savefig('cnmp_trajectories.png')
+    plt.savefig('assets/cnmp_trajectories.png')
     plt.show()
-
-
+    
 def plot_errors(ef_mean, ef_std, obj_mean, obj_std):
     labels = ['End-Effector', 'Object']
     means = [ef_mean, obj_mean]
@@ -175,7 +175,7 @@ def plot_errors(ef_mean, ef_std, obj_mean, obj_std):
     plt.bar(labels, means, yerr=stds, capsize=10)
     plt.ylabel('MSE')
     plt.title('Prediction Error (CNMP)')
-    plt.savefig('cnmp_errors.png')
+    plt.savefig('assets/cnmp_errors.png')
     plt.show()
 
 
@@ -185,7 +185,7 @@ ef_mean, ef_std, obj_mean, obj_std = evaluate_model(model, dataset)
 plot_errors(ef_mean, ef_std, obj_mean, obj_std)
 
 # Save the model
-torch.save(model.state_dict(), 'cnmp_model.pth')
+torch.save(model.state_dict(), 'assets/cnmp_model.pth')
 
 # Generate a sample trajectory
 plot_random_trajectories(model, num_trajectories=5, num_points=100, seed=1)

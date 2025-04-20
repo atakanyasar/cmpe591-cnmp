@@ -1,11 +1,11 @@
 # CNMP Model
 
 ### CNMP Errors
-![](./cnmp_errors.png)
+![](./assets/cnmp_errors.png)
 
 ### Collected Trajectories
-![](./collected_trajectories.png)
+![](./assets/collected_trajectories.png)
 
 ### Generated Trajectories
-![](./cnmp_trajectories.png)
+![](./assets/cnmp_trajectories.png)
 

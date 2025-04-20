@@ -213,7 +213,7 @@ if __name__ == "__main__":
         states_arr.append(states)
         print(f"Collected {i+1} trajectories.", end="\r")
 
-    np.save("states.npy", states_arr)
+    np.save("assets/states.npy", states_arr)
 
     fig, ax = plt.subplots(1, 2)
     for states in states_arr:
@@ -223,5 +223,5 @@ if __name__ == "__main__":
         ax[1].plot(states[:, 2], states[:, 3], alpha=0.2, color="r")
         ax[1].set_xlabel("o_y")
         ax[1].set_ylabel("o_z")
-    plt.savefig("collected_trajectories.png")
+    plt.savefig("assets/collected_trajectories.png")
     plt.show()
